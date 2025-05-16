@@ -502,8 +502,8 @@ module FastMcp
       def process_json_request(request)
         # Parse the request body
         body = request.body.read
-
-        response = process_message(body) || []
+        context = request['context']
+        response = process_message(body, context) || ''
         @logger.info("Response: #{response}")
 
         [200, { 'Content-Type' => 'application/json' }, response]

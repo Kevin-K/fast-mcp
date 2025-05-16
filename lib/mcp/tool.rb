@@ -91,6 +91,8 @@ module FastMcp
   class Tool
     class InvalidArgumentsError < StandardError; end
 
+    attr_accessor :context
+
     class << self
       attr_accessor :server
 
@@ -137,6 +139,7 @@ module FastMcp
     end
 
     def call_with_schema_validation!(**args)
+      @context = args.delete(:context)
       arg_validation = self.class.input_schema.call(args)
       raise InvalidArgumentsError, arg_validation.errors.to_h.to_json if arg_validation.errors.any?
 
