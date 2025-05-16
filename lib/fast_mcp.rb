@@ -140,6 +140,8 @@ module FastMcp
     messages_route = options.delete(:messages_route) || 'messages'
     sse_route = options.delete(:sse_route) || 'sse'
     authenticate = options.delete(:authenticate) || false
+    authenticate_with = options.delete(:authenticate_with) || FastMcp::Transports::AuthenticatedRackTransport
+
     allowed_origins = options[:allowed_origins] || default_rails_allowed_origins(app)
     allowed_ips = options[:allowed_ips] || FastMcp::Transports::RackTransport::DEFAULT_ALLOWED_IPS
 
@@ -154,7 +156,7 @@ module FastMcp
 
     # Choose the right middleware based on authentication
     self.server.transport_klass = if authenticate
-                                    FastMcp::Transports::AuthenticatedRackTransport
+                                    authenticate_with
                                   else
                                     FastMcp::Transports::RackTransport
                                   end
