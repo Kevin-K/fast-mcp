@@ -303,8 +303,7 @@ module FastMcp
       begin
         # Convert string keys to symbols for Ruby
         symbolized_args = symbolize_keys(arguments).merge(context: context)
-        result = tool.new.call_with_schema_validation!(**symbolized_args)
-
+        result, metadata = tool.new.call_with_schema_validation!(**symbolized_args)
         # Format and send the result
         send_formatted_result(result, id, metadata)
       rescue FastMcp::Tool::InvalidArgumentsError => e
