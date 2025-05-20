@@ -6,7 +6,6 @@ PATH
       dry-schema (~> 1.14)
       json (~> 2.0)
       mime-types (~> 3.4)
-      rack (~> 3.1)
 
 GEM
   remote: https://rubygems.org/
@@ -123,7 +122,7 @@ GEM
     unicode-display_width (3.1.4)
       unicode-emoji (~> 4.0, >= 4.0.4)
     unicode-emoji (4.0.4)
-    zeitwerk (2.7.2)
+    zeitwerk (2.6.18)
 
 PLATFORMS
   arm64-darwin-23
@@ -135,6 +134,7 @@ DEPENDENCIES
   mime-types (~> 3.4)
   pry
   puma
+  rack
   rackup (~> 2.2)
   rake (~> 13.0)
   rspec (~> 3.0)
