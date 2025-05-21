@@ -96,7 +96,7 @@ module FastMcp
 
       # Register a new SSE client
       def register_sse_client(client_id, stream, mutex = nil)
-        @logger.info("Registering SSE client: #{client_id}")
+        @logger.info("\n\nRegistering SSE client: #{client_id}\n\n")
         @sse_clients[client_id] = { stream: stream, connected_at: Time.now, mutex: Mutex.new }
       end
 
@@ -124,14 +124,16 @@ module FastMcp
       end
 
       def send_message_to(client_id, message)
-        @logger.info("Client: #{client_id} attempting to send message: #{message}")
+        @logger.info("\n\nClient: #{client_id} attempting to send message: #{message}\n\n")
+        # LEFT OFF HERE CLIENT NOT FOUND
+        # BECAUSE NOT YET IN THE CLIENT HASH! TOO FAST!
         client = @sse_clients[client_id]
         return unless client
         stream = client[:stream]
         mutex = client[:mutex]
         return if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
         mutex.synchronize do
-          @logger.info("Client: #{client_id} lock aquired. sending message: #{message}")
+          @logger.info("\n\nClient: #{client_id} lock aquired. sending message: #{message}\n\n")
           stream.write("data: #{JSON.generate(message)}\n\n")
           stream.flush if stream.respond_to?(:flush)
         end
@@ -319,7 +321,7 @@ module FastMcp
 
         # Handle reconnection
         if client_id && @sse_clients.key?(client_id)
-          handle_client_reconnection(client_id, browser_type)
+          # handle_client_reconnection(client_id, browser_type)
         else
           # Generate a new client ID if none was provided
           client_id ||= SecureRandom.uuid
@@ -454,6 +456,7 @@ module FastMcp
             break
           end
         end
+        @logger.info("Keep-alive loop ended for client #{client_id}. running: #{@running}, io_closed: #{io.closed?}")
       end
 
       # Send a keep-alive ping and return the updated ping count
@@ -461,10 +464,15 @@ module FastMcp
         ping_count += 1
         mutex ||= @sse_clients[client_id] && @sse_clients[client_id][:mutex]
         # Send a comment before each ping to keep the connection alive
-        mutex.synchronize { io.write(": keep-alive #{ping_count}\n\n") ; io.flush } if mutex
+        if mutex
+          mutex.synchronize do
+            io.write(": keep-alive #{ping_count}\n\n")
+            io.flush
+          end
+        end
         # Only send actual ping events every 5 counts to reduce overhead
         if (ping_count % 5).zero?
-          @logger.debug("Sending ping ##{ping_count} to SSE client #{client_id}")
+          @logger.info("Sending ping ##{ping_count} to SSE client #{client_id}")
           send_ping_event(io, mutex)
         end
         ping_count
