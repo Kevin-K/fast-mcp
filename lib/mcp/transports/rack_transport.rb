@@ -123,6 +123,19 @@ module FastMcp
         end
       end
 
+      def send_message_to(client_id, message)
+        client = @sse_clients[client_id]
+        return unless client
+        stream = client[:stream]
+        mutex = client[:mutex]
+        return if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
+        mutex.synchronize do
+          @logger.info("Client: #{client_id} sending message: #{message}")
+          stream.write("data: #{JSON.generate(message)}\n\n")
+          stream.flush if stream.respond_to?(:flush)
+        end
+      end
+
       private
 
       def validate_client_ip(request)
@@ -373,7 +386,7 @@ module FastMcp
         client = @sse_clients[client_id]
         mutex = client ? client[:mutex] : Mutex.new
         # Send headers
-        @logger.debug("Sending HTTP headers for SSE connection #{client_id}")
+        @logger.info("Sending HTTP headers for SSE connection #{client_id}")
         mutex.synchronize do
           io.write("HTTP/1.1 200 OK\r\n")
           SSE_HEADERS.each { |k, v| io.write("#{k}: #{v}\r\n") }
@@ -393,8 +406,11 @@ module FastMcp
 
         # Send endpoint information as the first message with query parameters
         endpoint = "#{@path_prefix}/#{@messages_route}"
-        endpoint += "?#{query_string}" if query_string
-        @logger.debug("Sending endpoint information to client #{client_id}: #{endpoint}")
+        params = []
+        params << query_string if query_string && !query_string.empty?
+        params << "client_id=#{client_id}"
+        endpoint += "?#{params.join('&')}" unless params.empty?
+        @logger.info("Sending endpoint information to client #{client_id}: #{endpoint}")
         mutex.synchronize { io.write("event: endpoint\ndata: #{endpoint}\n\n") }
 
         # Send a retry directive with a very short reconnect time
