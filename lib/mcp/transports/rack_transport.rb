@@ -124,13 +124,14 @@ module FastMcp
       end
 
       def send_message_to(client_id, message)
+        @logger.info("Client: #{client_id} attempting to send message: #{message}")
         client = @sse_clients[client_id]
         return unless client
         stream = client[:stream]
         mutex = client[:mutex]
         return if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
         mutex.synchronize do
-          @logger.info("Client: #{client_id} sending message: #{message}")
+          @logger.info("Client: #{client_id} lock aquired. sending message: #{message}")
           stream.write("data: #{JSON.generate(message)}\n\n")
           stream.flush if stream.respond_to?(:flush)
         end
@@ -218,7 +219,7 @@ module FastMcp
         when "/#{@sse_route}"
           handle_sse_request(request, env)
         when "/#{@messages_route}"
-          handle_message_request(request)
+          handle_message_request(request, env)
         else
           @logger.error('Received unknown request')
           # Return 404 for unknown MCP endpoints
@@ -518,12 +519,13 @@ module FastMcp
       end
 
       # Handle message POST request
-      def handle_message_request(request)
+      def handle_message_request(request, env)
         @logger.debug('Received message request')
         return method_not_allowed_response unless request.post?
+        client_id = extract_client_id(env)
 
         begin
-          process_json_request(request)
+          process_json_request(request, client_id)
         rescue JSON::ParserError => e
           handle_parse_error(e)
         rescue StandardError => e
@@ -532,9 +534,11 @@ module FastMcp
       end
 
       # Process a JSON-RPC request
-      def process_json_request(request)
+      def process_json_request(request, client_id)
         # Parse the request body
         body = request.body.read
+        @context ||= {}
+        @context[:client_id] = client_id
         response = process_message(body, @context || {}) || []
         @logger.debug("Response: #{response}")
 
