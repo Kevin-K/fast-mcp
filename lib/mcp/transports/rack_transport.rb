@@ -384,7 +384,7 @@ module FastMcp
 
         # Send endpoint information as the first message with query parameters
         endpoint = "#{@path_prefix}/#{@messages_route}"
-        endpoint += "?#{query_string}" if query_string
+        endpoint += "?#{query_string}" if query_string # add client_id to the query string so communication back uses it
         @logger.debug("Sending endpoint information to client #{client_id}: #{endpoint}")
         io.write("event: endpoint\ndata: #{endpoint}\n\n")
 
@@ -503,7 +503,7 @@ module FastMcp
         # Parse the request body
         body = request.body.read
         response = process_message(body, @context || {}) || []
-        @logger.info("Response: #{response}")
+        @logger.debug("Response: #{response}")
 
         [200, { 'Content-Type' => 'application/json' }, response]
       end

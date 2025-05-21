@@ -142,8 +142,11 @@ module FastMcp
 
       @logger.debug("Received request: #{request.inspect}")
 
-      # Check if it's a valid JSON-RPC 2.0 request
-      unless request['jsonrpc'] == '2.0' && request['method']
+      if request['jsonrpc'] == '2.0'  && request['id'].present? && request['method'].blank?
+        # Handle the response - for ping we can just ignore it
+        return nil # Return nil to indicate no response needed
+      elsif request['jsonrpc'] != '2.0' || request['method'].blank?
+        # Check if it's a valid JSON-RPC 2.0 request
         return send_error(-32_600, 'Invalid Request', request['id'])
       end
 
@@ -151,28 +154,33 @@ module FastMcp
       params = request['params'] || {}
       id = request['id']
 
-      case method
-      when 'ping'
-        send_result({}, id)
-      when 'initialize'
-        handle_initialize(params, id)
-      when 'notifications/initialized'
-        handle_initialized_notification
-      when 'tools/list'
-        handle_tools_list(id)
-      when 'tools/call'
-        handle_tools_call(params, id, context)
-      when 'resources/list'
-        handle_resources_list(id)
-      when 'resources/read'
-        handle_resources_read(params, id)
-      when 'resources/subscribe'
-        handle_resources_subscribe(params, id)
-      when 'resources/unsubscribe'
-        handle_resources_unsubscribe(params, id)
-      else
-        send_error(-32_601, "Method not found: #{method}", id)
-      end
+      @logger.info("Request: #{id} - Received: #{method} #{params.inspect}")
+
+      result = case method
+                when 'ping'
+                  send_result({}, id)
+                when 'initialize'
+                  handle_initialize(params, id)
+                when 'notifications/initialized'
+                  handle_initialized_notification
+                when 'tools/list'
+                  handle_tools_list(id)
+                when 'tools/call'
+                  handle_tools_call(params, id, context)
+                when 'resources/list'
+                  handle_resources_list(id)
+                when 'resources/read'
+                  handle_resources_read(params, id)
+                when 'resources/subscribe'
+                  handle_resources_subscribe(params, id)
+                when 'resources/unsubscribe'
+                  handle_resources_unsubscribe(params, id)
+                else
+                  send_error(-32_601, "Method not found: #{method}", id)
+                end
+
+      @logger.info("Request: #{id} - Result: #{result.inspect}")
+      result
     rescue StandardError => e
       @logger.error("Error handling request: #{e.message}, #{e.backtrace.join("\n")}")
       send_error(-32_600, "Internal error: #{e.message}", id)
@@ -430,7 +438,7 @@ module FastMcp
         },
         id: id
       }
-
+      @logger.info("Request: #{id} -Error: #{response[:error]}")
       send_response(response)
     end
 
