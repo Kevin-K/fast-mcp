@@ -40,7 +40,8 @@ module FastMcp
         @allowed_origins = options[:allowed_origins] || DEFAULT_ALLOWED_ORIGINS
         @localhost_only = options.fetch(:localhost_only, true) # Default to localhost-only mode
         @allowed_ips = options[:allowed_ips] || DEFAULT_ALLOWED_IPS
-        @sse_clients = {}
+        binding.pry
+        @sse_clients = Concurrent::Hash.new
         @running = false
       end
 
