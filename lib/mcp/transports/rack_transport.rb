@@ -74,28 +74,30 @@ module FastMcp
 
         @sse_clients.each do |client_id, client|
           stream = client[:stream]
+          mutex = client[:mutex]
           next if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
 
-          stream.write("data: #{json_message}\n\n")
-          stream.flush if stream.respond_to?(:flush)
-        rescue Errno::EPIPE, IOError => e
-          # Broken pipe or IO error - client disconnected
-          @logger.info("Client #{client_id} disconnected: #{e.message}")
-          clients_to_remove << client_id
-        rescue StandardError => e
-          @logger.error("Error sending message to client #{client_id}: #{e.message}")
-          # Remove the client if we can't send to it
-          clients_to_remove << client_id
+          begin
+            mutex.synchronize do
+              stream.write("data: #{json_message}\n\n")
+              stream.flush if stream.respond_to?(:flush)
+            end
+          rescue Errno::EPIPE, IOError => e
+            @logger.info("Client #{client_id} disconnected: #{e.message}")
+            clients_to_remove << client_id
+          rescue StandardError => e
+            @logger.error("Error sending message to client #{client_id}: #{e.message}")
+            clients_to_remove << client_id
+          end
         end
 
-        # Remove disconnected clients outside the loop to avoid modifying the hash during iteration
         clients_to_remove.each { |client_id| unregister_sse_client(client_id) }
       end
 
       # Register a new SSE client
-      def register_sse_client(client_id, stream)
+      def register_sse_client(client_id, stream, mutex = nil)
         @logger.info("Registering SSE client: #{client_id}")
-        @sse_clients[client_id] = { stream: stream, connected_at: Time.now }
+        @sse_clients[client_id] = { stream: stream, connected_at: Time.now, mutex: Mutex.new }
       end
 
       # Unregister an SSE client
@@ -366,32 +368,40 @@ module FastMcp
 
       # Set up the SSE connection
       def setup_sse_connection(client_id, io, env)
+        # Handle for reconnection, if the client_id is already registered we reuse the mutext
+        # If not a reconnection, generate a new mutex used in registration
+        client = @sse_clients[client_id]
+        mutex = client ? client[:mutex] : Mutex.new
         # Send headers
         @logger.debug("Sending HTTP headers for SSE connection #{client_id}")
-        io.write("HTTP/1.1 200 OK\r\n")
-        SSE_HEADERS.each { |k, v| io.write("#{k}: #{v}\r\n") }
-        io.write("\r\n")
-        io.flush
+        mutex.synchronize do
+          io.write("HTTP/1.1 200 OK\r\n")
+          SSE_HEADERS.each { |k, v| io.write("#{k}: #{v}\r\n") }
+          io.write("\r\n")
+          io.flush
+        end
 
-        # Register client
-        register_sse_client(client_id, io)
+        # Register client (will overwrite if already present)
+        register_sse_client(client_id, io, mutex)
+        mutex = @sse_clients[client_id][:mutex]
 
         # Send an initial comment to keep the connection alive
-        io.write(": SSE connection established\n\n")
+        mutex.synchronize { io.write(": SSE connection established\n\n") }
 
         # Extract query parameters from the request
         query_string = env['QUERY_STRING']
 
         # Send endpoint information as the first message with query parameters
         endpoint = "#{@path_prefix}/#{@messages_route}"
-        endpoint += "?#{query_string}" if query_string # add client_id to the query string so communication back uses it
+        endpoint += "?#{query_string}" if query_string
         @logger.debug("Sending endpoint information to client #{client_id}: #{endpoint}")
-        io.write("event: endpoint\ndata: #{endpoint}\n\n")
+        mutex.synchronize { io.write("event: endpoint\ndata: #{endpoint}\n\n") }
 
         # Send a retry directive with a very short reconnect time
-        # This helps browsers reconnect quickly if the connection is lost
-        io.write("retry: 100\n\n") # 100ms reconnect time
-        io.flush
+        mutex.synchronize do
+          io.write("retry: 100\n\n") # 100ms reconnect time
+          io.flush
+        end
       rescue StandardError => e
         @logger.error("Error setting up SSE connection for client #{client_id}: #{e.message}")
         @logger.error(e.backtrace.join("\n")) if e.backtrace
@@ -417,14 +427,12 @@ module FastMcp
         ping_count = 0
         ping_interval = 1 # Send a ping every 1 second
         @running = true
-
+        mutex = @sse_clients[client_id] && @sse_clients[client_id][:mutex]
         while @running && !io.closed?
           begin
-            ping_count = send_keep_alive_ping(io, client_id, ping_count)
-
+            ping_count = send_keep_alive_ping(io, client_id, ping_count, mutex)
             sleep ping_interval
           rescue Errno::EPIPE, IOError => e
-            # Broken pipe or IO error - client disconnected
             @logger.error("SSE connection error for client #{client_id}: #{e.message}")
             break
           end
@@ -432,39 +440,48 @@ module FastMcp
       end
 
       # Send a keep-alive ping and return the updated ping count
-      def send_keep_alive_ping(io, client_id, ping_count)
+      def send_keep_alive_ping(io, client_id, ping_count, mutex = nil)
         ping_count += 1
-
+        mutex ||= @sse_clients[client_id] && @sse_clients[client_id][:mutex]
         # Send a comment before each ping to keep the connection alive
-        io.write(": keep-alive #{ping_count}\n\n")
-        io.flush
-
+        mutex.synchronize { io.write(": keep-alive #{ping_count}\n\n") ; io.flush } if mutex
         # Only send actual ping events every 5 counts to reduce overhead
         if (ping_count % 5).zero?
           @logger.debug("Sending ping ##{ping_count} to SSE client #{client_id}")
-          send_ping_event(io)
+          send_ping_event(io, mutex)
         end
-
         ping_count
       end
 
       # Send a ping event
-      def send_ping_event(io)
+      def send_ping_event(io, mutex = nil)
         ping_message = {
           jsonrpc: '2.0',
           method: 'ping',
           id: rand(1_000_000)
         }
-        io.write("event: message\ndata: #{JSON.generate(ping_message)}\n\n")
-        io.flush
+        if mutex
+          mutex.synchronize do
+            io.write("event: message\ndata: #{JSON.generate(ping_message)}\n\n")
+            io.flush
+          end
+        else
+          io.write("event: message\ndata: #{JSON.generate(ping_message)}\n\n")
+          io.flush
+        end
       end
 
       # Clean up SSE connection
       def cleanup_sse_connection(client_id, io)
         @logger.info("Cleaning up SSE connection for client #{client_id}")
+        mutex = @sse_clients[client_id] && @sse_clients[client_id][:mutex]
         unregister_sse_client(client_id)
         begin
-          io.close unless io.closed?
+          if mutex
+            mutex.synchronize { io.close unless io.closed? }
+          else
+            io.close unless io.closed?
+          end
           @logger.info("Successfully closed IO for client #{client_id}")
         rescue StandardError => e
           @logger.error("Error closing IO for client #{client_id}: #{e.message}")
