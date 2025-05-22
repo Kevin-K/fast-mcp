@@ -110,13 +110,18 @@ module FastMcp
       def call(env)
         request = Rack::Request.new(env)
         path = request.path
-        @logger.debug("Rack request path: #{path}")
+        @logger.info("[#{Thread.current.object_id}] ======\nRack request path: #{path} #{request.params}")
 
         # Check if the request is for our MCP endpoints
         if path.start_with?(@path_prefix)
           @logger.debug('Setting server transport to RackTransport')
           @server.transport = self
-          handle_mcp_request(request, env)
+          res = handle_mcp_request(request, env)
+          @logger.info("[#{Thread.current.object_id}] Rack response: #{res.inspect} ======\n")
+          if res[0] == 200
+            @logger.info("[#{Thread.current.object_id}] Sending 200 response with body: #{res[2].inspect}")
+          end
+          res
         else
           # Pass through to the main application
           @app.call(env)
@@ -208,6 +213,8 @@ module FastMcp
 
       # Handle MCP-specific requests
       def handle_mcp_request(request, env)
+        @logger.info("[MCP Rack Received] [#{request.request_method}] Path: #{request.path} Params: #{request.params}")
+
         # Validate client IP to ensure it's connecting from allowed sources
         return forbidden_response('Forbidden: Remote IP not allowed') unless validate_client_ip(request)
 
@@ -369,15 +376,16 @@ module FastMcp
       # Handle SSE with Rack hijacking (e.g., Puma)
       def handle_rack_hijack_sse(env)
         client_id = extract_client_id(env)
-        @logger.debug("Setting up Rack hijack SSE connection for client #{client_id}")
+        @logger.info("[#{Thread.current.object_id}] Setting up Rack hijack SSE connection for client #{client_id}")
 
         env['rack.hijack'].call
         io = env['rack.hijack_io']
-        @logger.debug("Obtained hijack IO for client #{client_id}")
+        @logger.info("[#{Thread.current.object_id}] Obtained hijack IO for client #{client_id}")
 
         setup_sse_connection(client_id, io, env)
         start_keep_alive_thread(client_id, io)
 
+        @logger.info("[#{Thread.current.object_id}] Returning async response - this thread will be released back to pool")
         # Return async response
         [-1, {}, []]
       end
@@ -429,20 +437,22 @@ module FastMcp
 
       # Start a keep-alive thread for SSE connection
       def start_keep_alive_thread(client_id, io)
-        @logger.info("Starting keep-alive thread for client #{client_id}")
+        @logger.info("[#{Thread.current.object_id}] Starting keep-alive thread for client #{client_id}")
         Thread.new do
+          @logger.info("[#{Thread.current.object_id}] Keep-alive thread started for client #{client_id}")
           keep_alive_loop(io, client_id)
         rescue StandardError => e
-          @logger.error("Error in SSE keep-alive for client #{client_id}: #{e.message}")
+          @logger.error("[#{Thread.current.object_id}] Error in SSE keep-alive for client #{client_id}: #{e.message}")
           @logger.error(e.backtrace.join("\n")) if e.backtrace
         ensure
+          @logger.info("[#{Thread.current.object_id}] Keep-alive thread ending for client #{client_id}")
           cleanup_sse_connection(client_id, io)
         end
       end
 
       # Run the keep-alive loop
       def keep_alive_loop(io, client_id)
-        @logger.info("Starting keep-alive loop for SSE connection #{client_id}")
+        @logger.info("[#{Thread.current.object_id}] Starting keep-alive loop for SSE connection #{client_id}")
         ping_count = 0
         ping_interval = 1 # Send a ping every 1 second
         @running = true
@@ -452,11 +462,11 @@ module FastMcp
             ping_count = send_keep_alive_ping(io, client_id, ping_count, mutex)
             sleep ping_interval
           rescue Errno::EPIPE, IOError => e
-            @logger.error("SSE connection error for client #{client_id}: #{e.message}")
+            @logger.error("[#{Thread.current.object_id}] SSE connection error for client #{client_id}: #{e.message}")
             break
           end
         end
-        @logger.info("Keep-alive loop ended for client #{client_id}. running: #{@running}, io_closed: #{io.closed?}")
+        @logger.info("[#{Thread.current.object_id}] Keep-alive loop ended for client #{client_id}. running: #{@running}, io_closed: #{io.closed?}")
       end
 
       # Send a keep-alive ping and return the updated ping count
@@ -528,12 +538,15 @@ module FastMcp
 
       # Handle message POST request
       def handle_message_request(request, env)
-        @logger.debug('Received message request')
+        @logger.info("[#{Thread.current.object_id}] [Rack Received] [#{request.request_method}] Path: #{request.path}")
         return method_not_allowed_response unless request.post?
         client_id = extract_client_id(env)
+        @logger.info("[#{Thread.current.object_id}] DEBUG: Starting to process message request for client: #{client_id}")
 
         begin
-          process_json_request(request, client_id)
+          res = process_json_request(request, client_id)
+          @logger.info("[#{Thread.current.object_id}] Message request processed, returning response: #{res.inspect}")
+          res
         rescue JSON::ParserError => e
           handle_parse_error(e)
         rescue StandardError => e
@@ -545,10 +558,11 @@ module FastMcp
       def process_json_request(request, client_id)
         # Parse the request body
         body = request.body.read
+        @logger.info("[#{Thread.current.object_id}] DEBUG: Processing JSON request for client: #{client_id}, body: #{body}")
         @context ||= {}
         @context[:client_id] = client_id
         response = process_message(body, @context || {}) || []
-        @logger.debug("Response: #{response}")
+        @logger.info("[#{Thread.current.object_id}] DEBUG: Generated response: #{response.inspect}")
 
         [200, { 'Content-Type' => 'application/json' }, response]
       end
@@ -571,6 +585,7 @@ module FastMcp
       end
 
       def json_rpc_error_response(http_status, code, message, id = nil)
+        @logger.info("DEBUG: Returning JSON-RPC error response: #{http_status}, #{code}, #{message}, #{id}")
         [http_status, { 'Content-Type' => 'application/json' },
          [JSON.generate(
            {
