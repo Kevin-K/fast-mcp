@@ -41,6 +41,7 @@ module FastMcp
         @localhost_only = options.fetch(:localhost_only, true) # Default to localhost-only mode
         @allowed_ips = options[:allowed_ips] || DEFAULT_ALLOWED_IPS
         @sse_clients = Concurrent::Hash.new
+        @sse_clients_mutex = Mutex.new
         @running = false
       end
 
@@ -57,10 +58,12 @@ module FastMcp
         @running = false
 
         # Close all SSE connections
-        @sse_clients.each_value do |client|
-          client[:stream].close if client[:stream].respond_to?(:close) && !client[:stream].closed?
-        rescue StandardError => e
-          @logger.error("Error closing SSE connection: #{e.message}")
+        @sse_clients_mutex.synchronize do
+          @sse_clients.each_value do |client|
+            client[:stream].close if client[:stream].respond_to?(:close) && !client[:stream].closed?
+          rescue StandardError => e
+            @logger.error("Error closing SSE connection: #{e.message}")
+          end
         end
         @sse_clients.clear
       end
@@ -72,22 +75,24 @@ module FastMcp
 
         clients_to_remove = []
 
-        @sse_clients.each do |client_id, client|
-          stream = client[:stream]
-          mutex = client[:mutex]
-          next if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
+        @sse_clients_mutex.synchronize do
+          @sse_clients.each do |client_id, client|
+            stream = client[:stream]
+            mutex = client[:mutex]
+            next if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
 
-          begin
-            mutex.synchronize do
-              stream.write("data: #{json_message}\n\n")
-              stream.flush if stream.respond_to?(:flush)
+            begin
+              mutex.synchronize do
+                stream.write("data: #{json_message}\n\n")
+                stream.flush if stream.respond_to?(:flush)
+              end
+            rescue Errno::EPIPE, IOError => e
+              @logger.info("Client #{client_id} disconnected: #{e.message}")
+              clients_to_remove << client_id
+            rescue StandardError => e
+              @logger.error("Error sending message to client #{client_id}: #{e.message}")
+              clients_to_remove << client_id
             end
-          rescue Errno::EPIPE, IOError => e
-            @logger.info("Client #{client_id} disconnected: #{e.message}")
-            clients_to_remove << client_id
-          rescue StandardError => e
-            @logger.error("Error sending message to client #{client_id}: #{e.message}")
-            clients_to_remove << client_id
           end
         end
 
@@ -97,13 +102,17 @@ module FastMcp
       # Register a new SSE client
       def register_sse_client(client_id, stream, mutex = nil)
         @logger.info("Registering SSE client: #{client_id}")
-        @sse_clients[client_id] = { stream: stream, connected_at: Time.now, mutex: Mutex.new }
+        @sse_clients_mutex.synchronize do
+          @sse_clients[client_id] = { stream: stream, connected_at: Time.now, mutex: Mutex.new }
+        end
       end
 
       # Unregister an SSE client
       def unregister_sse_client(client_id)
         @logger.info("Unregistering SSE client: #{client_id}")
-        @sse_clients.delete(client_id)
+        @sse_clients_mutex.synchronize do
+          @sse_clients.delete(client_id)
+        end
       end
 
       # Rack call method
@@ -338,9 +347,13 @@ module FastMcp
       # Handle client reconnection
       def handle_client_reconnection(client_id, browser_type)
         @logger.info("Client #{client_id} is reconnecting (#{browser_type})")
-        old_client = @sse_clients[client_id]
+        old_client = nil
+        @sse_clients_mutex.synchronize do
+          old_client = @sse_clients[client_id]
+        end
+
         begin
-          old_client[:stream].close if old_client[:stream].respond_to?(:close) && !old_client[:stream].closed?
+          old_client[:stream].close if old_client && old_client[:stream].respond_to?(:close) && !old_client[:stream].closed?
         rescue StandardError => e
           @logger.error("Error closing old connection for client #{client_id}: #{e.message}")
         end
