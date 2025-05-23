@@ -96,13 +96,13 @@ module FastMcp
 
       # Register a new SSE client
       def register_sse_client(client_id, stream, mutex = nil)
-        @logger.info("\n\nRegistering SSE client: #{client_id}\n\n")
+        @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] Registered")
         @sse_clients[client_id] = { stream: stream, connected_at: Time.now, mutex: Mutex.new }
       end
 
       # Unregister an SSE client
       def unregister_sse_client(client_id)
-        @logger.info("Unregistering SSE client: #{client_id}")
+        @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] Unregistered")
         @sse_clients.delete(client_id)
       end
 
@@ -110,18 +110,13 @@ module FastMcp
       def call(env)
         request = Rack::Request.new(env)
         path = request.path
-        @logger.info("[#{Thread.current.object_id}] ======\nRack request path: #{path} #{request.params}")
+        @logger.info("\n[#{Thread.current.object_id}] ======")
 
         # Check if the request is for our MCP endpoints
         if path.start_with?(@path_prefix)
           @logger.debug('Setting server transport to RackTransport')
           @server.transport = self
-          res = handle_mcp_request(request, env)
-          @logger.info("[#{Thread.current.object_id}] Rack response: #{res.inspect} ======\n")
-          if res[0] == 200
-            @logger.info("[#{Thread.current.object_id}] Sending 200 response with body: #{res[2].inspect}")
-          end
-          res
+          handle_mcp_request(request, env)
         else
           # Pass through to the main application
           @app.call(env)
@@ -129,19 +124,18 @@ module FastMcp
       end
 
       def send_message_to(client_id, message)
-        @logger.info("\n\nClient: #{client_id} attempting to send message: #{message}\n\n")
-        # LEFT OFF HERE CLIENT NOT FOUND
-        # BECAUSE NOT YET IN THE CLIENT HASH! TOO FAST!
+        # @logger.info("\n\nClient: #{client_id} attempting to send message: #{message}\n\n")
         client = @sse_clients[client_id]
         return unless client
         stream = client[:stream]
         mutex = client[:mutex]
         return if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
         mutex.synchronize do
-          @logger.info("\n\nClient: #{client_id} lock aquired. sending message: #{message}\n\n")
+          @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] #{message}")
           stream.write("data: #{JSON.generate(message)}\n\n")
           stream.flush if stream.respond_to?(:flush)
         end
+        nil
       end
 
       private
@@ -213,7 +207,7 @@ module FastMcp
 
       # Handle MCP-specific requests
       def handle_mcp_request(request, env)
-        @logger.info("[MCP Rack Received] [#{request.request_method}] Path: #{request.path} Params: #{request.params}")
+        @logger.info("[#{Thread.current.object_id}] [HTTP] [#{request.request_method}] Path: #{request.path} Params: #{request.params}")
 
         # Validate client IP to ensure it's connecting from allowed sources
         return forbidden_response('Forbidden: Remote IP not allowed') unless validate_client_ip(request)
@@ -313,7 +307,7 @@ module FastMcp
       end
 
       # Extract client ID from request or generate a new one
-      def extract_client_id(env)
+      def extract_client_id(env, reconnected = false)
         request = Rack::Request.new(env)
 
         # Check various places for client ID
@@ -324,15 +318,15 @@ module FastMcp
         # Get browser information
         user_agent = env['HTTP_USER_AGENT'] || ''
         browser_type = detect_browser_type(user_agent)
-        @logger.info("Client connection from: #{user_agent} (#{browser_type})")
+        # @logger.info("Client connection from: #{user_agent} (#{browser_type})")
 
         # Handle reconnection
-        if client_id && @sse_clients.key?(client_id)
-          # handle_client_reconnection(client_id, browser_type)
-        else
+        if reconnected && client_id && @sse_clients.key?(client_id)
+          handle_client_reconnection(client_id, browser_type)
+        elsif client_id.blank?
           # Generate a new client ID if none was provided
-          client_id ||= SecureRandom.uuid
-          @logger.info("New client connection: #{client_id} (#{browser_type})")
+          client_id = SecureRandom.uuid
+          @logger.info("[#{Thread.current.object_id}] [New client] #{client_id} (#{browser_type})")
         end
 
         client_id
@@ -375,7 +369,7 @@ module FastMcp
 
       # Handle SSE with Rack hijacking (e.g., Puma)
       def handle_rack_hijack_sse(env)
-        client_id = extract_client_id(env)
+        client_id = extract_client_id(env, true)
         @logger.info("[#{Thread.current.object_id}] Setting up Rack hijack SSE connection for client #{client_id}")
 
         env['rack.hijack'].call
@@ -397,7 +391,7 @@ module FastMcp
         client = @sse_clients[client_id]
         mutex = client ? client[:mutex] : Mutex.new
         # Send headers
-        @logger.info("Sending HTTP headers for SSE connection #{client_id}")
+        @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] Sending HTTP headers for SSE connection")
         mutex.synchronize do
           io.write("HTTP/1.1 200 OK\r\n")
           SSE_HEADERS.each { |k, v| io.write("#{k}: #{v}\r\n") }
@@ -421,7 +415,7 @@ module FastMcp
         params << query_string if query_string && !query_string.empty?
         params << "client_id=#{client_id}"
         endpoint += "?#{params.join('&')}" unless params.empty?
-        @logger.info("Sending endpoint information to client #{client_id}: #{endpoint}")
+        @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] Sending endpoint: #{endpoint}")
         mutex.synchronize { io.write("event: endpoint\ndata: #{endpoint}\n\n") }
 
         # Send a retry directive with a very short reconnect time
@@ -482,7 +476,7 @@ module FastMcp
         end
         # Only send actual ping events every 5 counts to reduce overhead
         if (ping_count % 5).zero?
-          @logger.info("Sending ping ##{ping_count} to SSE client #{client_id}")
+          # @logger.info("Sending ping ##{ping_count} to SSE client #{client_id}")
           send_ping_event(io, mutex)
         end
         ping_count
@@ -525,7 +519,7 @@ module FastMcp
 
       # Handle SSE with Rails ActionController::Live
       def handle_rails_sse(env)
-        client_id = extract_client_id(env)
+        client_id = extract_client_id(env, true)
         controller = env['action_controller.instance']
         stream = controller.response.stream
 
@@ -538,14 +532,12 @@ module FastMcp
 
       # Handle message POST request
       def handle_message_request(request, env)
-        @logger.info("[#{Thread.current.object_id}] [Rack Received] [#{request.request_method}] Path: #{request.path}")
         return method_not_allowed_response unless request.post?
         client_id = extract_client_id(env)
-        @logger.info("[#{Thread.current.object_id}] DEBUG: Starting to process message request for client: #{client_id}")
 
         begin
           res = process_json_request(request, client_id)
-          @logger.info("[#{Thread.current.object_id}] Message request processed, returning response: #{res.inspect}")
+          @logger.info("[#{Thread.current.object_id}] [HTTP] [POST] [response]  [#{client_id}] #{res.inspect}")
           res
         rescue JSON::ParserError => e
           handle_parse_error(e)
@@ -558,11 +550,9 @@ module FastMcp
       def process_json_request(request, client_id)
         # Parse the request body
         body = request.body.read
-        @logger.info("[#{Thread.current.object_id}] DEBUG: Processing JSON request for client: #{client_id}, body: #{body}")
         @context ||= {}
         @context[:client_id] = client_id
         response = process_message(body, @context || {}) || []
-        @logger.info("[#{Thread.current.object_id}] DEBUG: Generated response: #{response.inspect}")
 
         [200, { 'Content-Type' => 'application/json' }, response]
       end

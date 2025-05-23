@@ -144,6 +144,7 @@ module FastMcp
 
       if request['jsonrpc'] == '2.0'  && request['id'].present? && request['method'].blank?
         # Handle the response - for ping we can just ignore it
+        @logger.info("[#{Thread.current.object_id}] [HTTP] [POST] [ping] [#{context[:client_id]}] ping acknowledged")
         return nil # Return nil to indicate no response needed
       elsif request['jsonrpc'] != '2.0' || request['method'].blank?
         # Check if it's a valid JSON-RPC 2.0 request
@@ -154,9 +155,7 @@ module FastMcp
       params = request['params'] || {}
       id = request['id']
 
-      @logger.info("No Client for request. Dropped: #{id} - Received: #{method} #{params.inspect}") unless context[:client_id]
-      @logger.info("Client: #{context[:client_id]} - Request: #{id} - Received: #{method} #{params.inspect}")
-
+      @logger.info("[#{Thread.current.object_id}] [#{id}] [#{method}] client: #{context[:client_id]}")
       result = case method
                 when 'ping'
                   send_result({}, id, context)
@@ -234,7 +233,7 @@ module FastMcp
       client_info = params['clientInfo'] || {}
 
       # Log client information
-      @logger.info("Client connected: #{client_info['name']} v#{client_info['version']}")
+      # @logger.info("Client connected: #{client_info['name']} v#{client_info['version']}")
       # @logger.debug("Client capabilities: #{client_capabilities.inspect}")
 
       # Prepare server response
@@ -247,7 +246,7 @@ module FastMcp
         }
       }
 
-      @logger.info("Server response: #{response.inspect}")
+      # @logger.info("Server response: #{response.inspect}")
 
       send_result(response, id, client_id: context[:client_id])
     end
@@ -425,12 +424,12 @@ module FastMcp
         result: result
       }
 
-      @logger.info("Sending result: #{response.inspect}")
+      # @logger.info("Sending result: #{response.inspect}")
       send_response(response, client_id: client_id)
     end
 
     # Send a JSON-RPC error response
-    def send_error(code, message, id = nil, client_id:)
+    def send_error(code, message, id = nil, client_id: nil)
       response = {
         jsonrpc: '2.0',
         error: {
@@ -440,7 +439,7 @@ module FastMcp
         id: id
       }
       @logger.info("Request: #{id} -Error: #{response[:error]}")
-      send_response(response, client_id: client_id)
+      send_response(response, client_id: client_id) if client_id
     end
 
     # Send a JSON-RPC response
