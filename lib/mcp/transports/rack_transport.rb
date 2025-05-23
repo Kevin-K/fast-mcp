@@ -64,8 +64,8 @@ module FastMcp
           rescue StandardError => e
             @logger.error("Error closing SSE connection: #{e.message}")
           end
+          @sse_clients.clear
         end
-        @sse_clients.clear
       end
 
       # Send a message to all connected SSE clients
@@ -74,12 +74,11 @@ module FastMcp
         @logger.debug("Broadcasting message to #{@sse_clients.size} SSE clients: #{json_message}")
 
         clients_to_remove = []
-
         @sse_clients_mutex.synchronize do
           @sse_clients.each do |client_id, client|
             stream = client[:stream]
             mutex = client[:mutex]
-            next if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
+            next if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?) || mutex.nil?
 
             begin
               mutex.synchronize do
@@ -103,7 +102,7 @@ module FastMcp
       def register_sse_client(client_id, stream, mutex = nil)
         @sse_clients_mutex.synchronize do
           @logger.info("Registering SSE client: #{client_id}")
-          @sse_clients[client_id] = { stream: stream, connected_at: Time.now, mutex: Mutex.new }
+          @sse_clients[client_id] = { stream: stream, connected_at: Time.now, mutex: mutex || Mutex.new }
         end
       end
 
@@ -135,9 +134,11 @@ module FastMcp
       def send_message_to(client_id, message)
         client = @sse_clients[client_id]
         return unless client
+
         stream = client[:stream]
         mutex = client[:mutex]
         return if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
+
         mutex.synchronize do
           @logger.info("Client: #{client_id}, SSE Message: #{message}")
           stream.write("data: #{JSON.generate(message)}\n\n")
@@ -369,7 +370,9 @@ module FastMcp
         end
 
         begin
-          old_client[:stream].close if old_client && old_client[:stream].respond_to?(:close) && !old_client[:stream].closed?
+          if old_client && old_client[:stream].respond_to?(:close) && !old_client[:stream].closed?
+            old_client[:stream].close
+          end
         rescue StandardError => e
           @logger.error("Error closing old connection for client #{client_id}: #{e.message}")
         end
@@ -397,7 +400,7 @@ module FastMcp
 
       # Set up the SSE connection
       def setup_sse_connection(client_id, io, env)
-        # Handle for reconnection, if the client_id is already registered we reuse the mutext
+        # Handle for reconnection, if the client_id is already registered we reuse the mutex
         # If not a reconnection, generate a new mutex used in registration
         client = @sse_clients[client_id]
         mutex = client ? client[:mutex] : Mutex.new
@@ -465,20 +468,19 @@ module FastMcp
         mutex = @sse_clients[client_id] && @sse_clients[client_id][:mutex]
         while @running && !io.closed?
           begin
-            ping_count = send_keep_alive_ping(io, client_id, ping_count, mutex)
+            mutex.synchronize { ping_count = send_keep_alive_ping(io, client_id, ping_count) }
             sleep ping_interval
           rescue Errno::EPIPE, IOError => e
+            # Broken pipe or IO error - client disconnected
             @logger.error("SSE connection error for client #{client_id}: #{e.message}")
             break
           end
         end
-        @logger.info("Keep-alive loop ended for client #{client_id}. running: #{@running}, io_closed: #{io.closed?}")
       end
 
       # Send a keep-alive ping and return the updated ping count
-      def send_keep_alive_ping(io, client_id, ping_count, mutex = nil)
+      def send_keep_alive_ping(io, client_id, ping_count)
         ping_count += 1
-        mutex ||= @sse_clients[client_id] && @sse_clients[client_id][:mutex]
         # Send a comment before each ping to keep the connection alive
         if mutex
           mutex.synchronize do
