@@ -155,7 +155,7 @@ module FastMcp
       params = request['params'] || {}
       id = request['id']
 
-      @logger.info("[#{client_id}] [#{id}] [#{method}]")
+      @logger.info("Client: #{client_id} Request: #{id} Method: #{method} Params: #{params.inspect}")
       case method
       when 'ping'
         send_result({}, id, client_id)
@@ -231,7 +231,7 @@ module FastMcp
       client_id = context[:client_id]
 
       # Log client information
-      # @logger.info("Client connected: #{client_info['name']} v#{client_info['version']}")
+      @logger.info("Client connected: #{client_info['name']} v#{client_info['version']}")
       # @logger.debug("Client capabilities: #{client_capabilities.inspect}")
 
       # Prepare server response

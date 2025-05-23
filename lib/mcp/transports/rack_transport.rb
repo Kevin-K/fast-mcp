@@ -102,7 +102,7 @@ module FastMcp
       # Register a new SSE client
       def register_sse_client(client_id, stream, mutex = nil)
         @sse_clients_mutex.synchronize do
-          @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] Registered")
+          @logger.info("Registering SSE client: #{client_id}")
           @sse_clients[client_id] = { stream: stream, connected_at: Time.now, mutex: Mutex.new }
         end
       end
@@ -110,7 +110,7 @@ module FastMcp
       # Unregister an SSE client
       def unregister_sse_client(client_id)
         @sse_clients_mutex.synchronize do
-          @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] Unregistered")
+          @logger.info("Unregistering SSE client: #{client_id}")
           @sse_clients.delete(client_id)
         end
       end
@@ -119,6 +119,7 @@ module FastMcp
       def call(env)
         request = Rack::Request.new(env)
         path = request.path
+        @logger.debug("Rack request path: #{path}")
 
         # Check if the request is for our MCP endpoints
         if path.start_with?(@path_prefix)
@@ -132,14 +133,13 @@ module FastMcp
       end
 
       def send_message_to(client_id, message)
-        # @logger.info("\n\nClient: #{client_id} attempting to send message: #{message}\n\n")
         client = @sse_clients[client_id]
         return unless client
         stream = client[:stream]
         mutex = client[:mutex]
         return if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?)
         mutex.synchronize do
-          @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] #{message}")
+          @logger.info("Client: #{client_id}, SSE Message: #{message}")
           stream.write("data: #{JSON.generate(message)}\n\n")
           stream.flush if stream.respond_to?(:flush)
         end
@@ -334,7 +334,7 @@ module FastMcp
         elsif client_id.blank?
           # Generate a new client ID if none was provided
           client_id = SecureRandom.uuid
-          @logger.info("[#{Thread.current.object_id}] [New client] #{client_id} (#{browser_type})")
+          @logger.info("New client connection: #{client_id} (#{browser_type})")
         end
 
         client_id
@@ -382,16 +382,15 @@ module FastMcp
       # Handle SSE with Rack hijacking (e.g., Puma)
       def handle_rack_hijack_sse(env)
         client_id = extract_client_id(env, true)
-        @logger.info("[#{Thread.current.object_id}] Setting up Rack hijack SSE connection for client #{client_id}")
+        @logger.info("Setting up Rack hijack SSE connection for client #{client_id}")
 
         env['rack.hijack'].call
         io = env['rack.hijack_io']
-        @logger.info("[#{Thread.current.object_id}] Obtained hijack IO for client #{client_id}")
+        @logger.info("Obtained hijack IO for client #{client_id}")
 
         setup_sse_connection(client_id, io, env)
         start_keep_alive_thread(client_id, io)
 
-        @logger.info("[#{Thread.current.object_id}] Returning async response - this thread will be released back to pool")
         # Return async response
         [-1, {}, []]
       end
@@ -403,7 +402,7 @@ module FastMcp
         client = @sse_clients[client_id]
         mutex = client ? client[:mutex] : Mutex.new
         # Send headers
-        @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] Sending HTTP headers for SSE connection")
+        @logger.debug("Sending HTTP headers for SSE connection #{client_id}")
         mutex.synchronize do
           io.write("HTTP/1.1 200 OK\r\n")
           SSE_HEADERS.each { |k, v| io.write("#{k}: #{v}\r\n") }
@@ -427,12 +426,13 @@ module FastMcp
         params << query_string if query_string && !query_string.empty?
         params << "client_id=#{client_id}"
         endpoint += "?#{params.join('&')}" unless params.empty?
-        @logger.info("[#{Thread.current.object_id}] [SSE] [#{client_id}] Sending endpoint: #{endpoint}")
+        @logger.debug("Sending endpoint information to client #{client_id}: #{endpoint}")
         mutex.synchronize { io.write("event: endpoint\ndata: #{endpoint}\n\n") }
 
         # Send a retry directive with a very short reconnect time
+        # This helps browsers reconnect quickly if the connection is lost
         mutex.synchronize do
-          io.write("retry: 100\n\n") # 100ms reconnect time
+          io.write("retry: 100\n\n")
           io.flush
         end
       rescue StandardError => e
@@ -443,22 +443,22 @@ module FastMcp
 
       # Start a keep-alive thread for SSE connection
       def start_keep_alive_thread(client_id, io)
-        @logger.info("[#{Thread.current.object_id}] Starting keep-alive thread for client #{client_id}")
+        @logger.info("Starting keep-alive thread for client #{client_id}")
         Thread.new do
-          @logger.info("[#{Thread.current.object_id}] Keep-alive thread started for client #{client_id}")
+          @logger.info("Keep-alive thread started for client #{client_id}")
           keep_alive_loop(io, client_id)
         rescue StandardError => e
-          @logger.error("[#{Thread.current.object_id}] Error in SSE keep-alive for client #{client_id}: #{e.message}")
+          @logger.error("Error in SSE keep-alive for client #{client_id}: #{e.message}")
           @logger.error(e.backtrace.join("\n")) if e.backtrace
         ensure
-          @logger.info("[#{Thread.current.object_id}] Keep-alive thread ending for client #{client_id}")
+          @logger.info("Keep-alive thread ending for client #{client_id}")
           cleanup_sse_connection(client_id, io)
         end
       end
 
       # Run the keep-alive loop
       def keep_alive_loop(io, client_id)
-        @logger.info("[#{Thread.current.object_id}] Starting keep-alive loop for SSE connection #{client_id}")
+        @logger.info("Starting keep-alive loop for SSE connection #{client_id}")
         ping_count = 0
         ping_interval = 1 # Send a ping every 1 second
         @running = true
@@ -468,11 +468,11 @@ module FastMcp
             ping_count = send_keep_alive_ping(io, client_id, ping_count, mutex)
             sleep ping_interval
           rescue Errno::EPIPE, IOError => e
-            @logger.error("[#{Thread.current.object_id}] SSE connection error for client #{client_id}: #{e.message}")
+            @logger.error("SSE connection error for client #{client_id}: #{e.message}")
             break
           end
         end
-        @logger.info("[#{Thread.current.object_id}] Keep-alive loop ended for client #{client_id}. running: #{@running}, io_closed: #{io.closed?}")
+        @logger.info("Keep-alive loop ended for client #{client_id}. running: #{@running}, io_closed: #{io.closed?}")
       end
 
       # Send a keep-alive ping and return the updated ping count
@@ -488,7 +488,7 @@ module FastMcp
         end
         # Only send actual ping events every 5 counts to reduce overhead
         if (ping_count % 5).zero?
-          # @logger.info("Sending ping ##{ping_count} to SSE client #{client_id}")
+          @logger.debug("Sending ping ##{ping_count} to SSE client #{client_id}")
           send_ping_event(io, mutex)
         end
         ping_count
