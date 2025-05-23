@@ -119,7 +119,6 @@ module FastMcp
       def call(env)
         request = Rack::Request.new(env)
         path = request.path
-        @logger.info("\n[#{Thread.current.object_id}] ======")
 
         # Check if the request is for our MCP endpoints
         if path.start_with?(@path_prefix)

@@ -134,56 +134,53 @@ module FastMcp
 
     # Handle incoming JSON-RPC request
     def handle_request(json_str, context = {}) # rubocop:disable Metrics/MethodLength
+      client_id = context[:client_id]
       begin
         request = JSON.parse(json_str)
       rescue JSON::ParserError, TypeError
-        return send_error(-32_600, 'Invalid Request', nil, client_id: context[:client_id]) if context[:client_id]
+        return send_error(-32_600, 'Invalid Request', nil, client_id)
       end
 
       @logger.debug("Received request: #{request.inspect}")
 
       if request['jsonrpc'] == '2.0'  && request['id'].present? && request['method'].blank?
         # Handle the response - for ping we can just ignore it
-        @logger.info("[#{Thread.current.object_id}] [HTTP] [POST] [ping] [#{context[:client_id]}] ping acknowledged")
-        return nil # Return nil to indicate no response needed
+        return nil
       elsif request['jsonrpc'] != '2.0' || request['method'].blank?
         # Check if it's a valid JSON-RPC 2.0 request
-        return send_error(-32_600, 'Invalid Request', request['id'], client_id: context[:client_id]) if context[:client_id]
+        return send_error(-32_600, 'Invalid Request', request['id'], client_id)
       end
 
       method = request['method']
       params = request['params'] || {}
       id = request['id']
 
-      @logger.info("[#{Thread.current.object_id}] [#{id}] [#{method}] client: #{context[:client_id]}")
-      result = case method
-                when 'ping'
-                  send_result({}, id, context)
-                when 'initialize'
-                  handle_initialize(params, id, context)
-                when 'notifications/initialized'
-                  handle_initialized_notification
-                when 'tools/list'
-                  handle_tools_list(id, context)
-                when 'tools/call'
-                  handle_tools_call(params, id, context)
-                when 'resources/list'
-                  handle_resources_list(id, context)
-                when 'resources/read'
-                  handle_resources_read(params, id, context)
-                when 'resources/subscribe'
-                  handle_resources_subscribe(params, id, context)
-                when 'resources/unsubscribe'
-                  handle_resources_unsubscribe(params, id, context)
-                else
-                  send_error(-32_601, "Method not found: #{method}", id, client_id: context[:client_id])
-                end
-
-      @logger.info("Request: #{id} - Result: #{result.inspect}")
-      result
+      @logger.info("[#{client_id}] [#{id}] [#{method}]")
+      case method
+      when 'ping'
+        send_result({}, id, client_id)
+      when 'initialize'
+        handle_initialize(params, id, context)
+      when 'notifications/initialized'
+        handle_initialized_notification
+      when 'tools/list'
+        handle_tools_list(id, context)
+      when 'tools/call'
+        handle_tools_call(params, id, context)
+      when 'resources/list'
+        handle_resources_list(id, context)
+      when 'resources/read'
+        handle_resources_read(params, id, context)
+      when 'resources/subscribe'
+        handle_resources_subscribe(params, id, context)
+      when 'resources/unsubscribe'
+        handle_resources_unsubscribe(params, id, context)
+      else
+        send_error(-32_601, "Method not found: #{method}", id, client_id)
+      end
     rescue StandardError => e
       @logger.error("Error handling request: #{e.message}, #{e.backtrace.join("\n")}")
-      send_error(-32_600, "Internal error: #{e.message}", id, client_id: context[:client_id])
+      send_error(-32_600, "Internal error: #{e.message}", id, client_id)
     end
 
     # Handle a JSON-RPC request and return the response as a JSON string
@@ -231,6 +228,7 @@ module FastMcp
       # Store client capabilities for later use
       @client_capabilities = params['capabilities'] || {}
       client_info = params['clientInfo'] || {}
+      client_id = context[:client_id]
 
       # Log client information
       # @logger.info("Client connected: #{client_info['name']} v#{client_info['version']}")
@@ -248,17 +246,18 @@ module FastMcp
 
       # @logger.info("Server response: #{response.inspect}")
 
-      send_result(response, id, client_id: context[:client_id])
+      send_result(response, id, client_id)
     end
 
     # Handle a resource read
     def handle_resources_read(params, id, context)
       uri = params['uri']
+      client_id = context[:client_id]
 
-      return send_error(-32_602, 'Invalid params: missing resource URI', id, client_id: context[:client_id]) unless uri
+      return send_error(-32_602, 'Invalid params: missing resource URI', id, client_id) unless uri
 
       resource = @resources[uri]
-      return send_error(-32_602, "Resource not found: #{uri}", id, client_id: context[:client_id]) unless resource
+      return send_error(-32_602, "Resource not found: #{uri}", id, client_id) unless resource
 
       base_content = { uri: resource.uri }
       base_content[:mimeType] = resource.mime_type if resource.mime_type
@@ -274,7 +273,7 @@ module FastMcp
                  }
                end
 
-      send_result(result, id, client_id: context[:client_id])
+      send_result(result, id, client_id)
     end
 
     def handle_initialized_notification
@@ -288,6 +287,7 @@ module FastMcp
 
     # Handle tools/list request
     def handle_tools_list(id, context)
+      client_id = context[:client_id]
       tools_list = @tools.values.map do |tool|
         {
           name: tool.tool_name,
@@ -296,38 +296,39 @@ module FastMcp
         }
       end
 
-      send_result({ tools: tools_list }, id, client_id: context[:client_id])
+      send_result({ tools: tools_list }, id, client_id)
     end
 
     # Handle tools/call request
     def handle_tools_call(params, id, context)
+      client_id = context[:client_id]
       tool_name = params['name']
       arguments = params['arguments'] || {}
-      return send_error(-32_602, 'Invalid params: missing tool name', id, client_id: context[:client_id]) unless tool_name
+      return send_error(-32_602, 'Invalid params: missing tool name', id, client_id) unless tool_name
 
       tool = @tools[tool_name]
-      return send_error(-32_602, "Tool not found: #{tool_name}", id) unless tool
+      return send_error(-32_602, "Tool not found: #{tool_name}", id, client_id) unless tool
 
       begin
         # Convert string keys to symbols for Ruby
         symbolized_args = symbolize_keys(arguments).merge(context: context)
         result, metadata = tool.new.call_with_schema_validation!(**symbolized_args)
         # Format and send the result
-        send_formatted_result(result, id, metadata, client_id: context[:client_id])
+        send_formatted_result(result, id, metadata, client_id)
       rescue FastMcp::Tool::InvalidArgumentsError => e
         @logger.error("Invalid arguments for tool #{tool_name}: #{e.message}")
-        send_error_result(e.message, id, client_id: context[:client_id])
+        send_error_result(e.message, id, client_id)
       rescue StandardError => e
         @logger.error("Error calling tool #{tool_name}: #{e.message}")
-        send_error_result("#{e.message}, #{e.backtrace.join("\n")}", id, client_id: context[:client_id])
+        send_error_result("#{e.message}, #{e.backtrace.join("\n")}", id, client_id)
       end
     end
 
     # Format and send successful result
-    def send_formatted_result(result, id, metadata, context)
+    def send_formatted_result(result, id, metadata, client_id)
       # Check if the result is already in the expected format
       if result.is_a?(Hash) && result.key?(:content)
-        send_result(result, id, metadata: metadata, client_id: context[:client_id])
+        send_result(result, id, client_id, metadata: metadata)
       else
         # Format the result according to the MCP specification
         formatted_result = {
@@ -335,26 +336,27 @@ module FastMcp
           isError: false
         }
 
-        send_result(formatted_result, id, metadata: metadata, client_id: context[:client_id])
+        send_result(formatted_result, id, client_id, metadata: metadata)
       end
     end
 
     # Format and send error result
-    def send_error_result(message, id, client_id:)
+    def send_error_result(message, id, client_id)
       # Format error according to the MCP specification
       error_result = {
         content: [{ type: 'text', text: "Error: #{message}" }],
         isError: true
       }
 
-      send_result(error_result, id, client_id: client_id)
+      send_result(error_result, id, client_id)
     end
 
     # Handle resources/list request
     def handle_resources_list(id, context)
+      client_id = context[:client_id]
       resources_list = @resources.values.map(&:metadata)
 
-      send_result({ resources: resources_list }, id, client_id: context[:client_id])
+      send_result({ resources: resources_list }, id, client_id)
     end
 
     # Handle resources/subscribe request
@@ -362,15 +364,16 @@ module FastMcp
       return unless @client_initialized
 
       uri = params['uri']
+      client_id = context[:client_id]
 
       unless uri
-        send_error(-32_602, 'Invalid params: missing resource URI', id, client_id: context[:client_id])
+        send_error(-32_602, 'Invalid params: missing resource URI', id, client_id)
         return
       end
 
       resource = @resources[uri]
       unless resource
-        send_error(-32_602, "Resource not found: #{uri}", id, client_id: context[:client_id])
+        send_error(-32_602, "Resource not found: #{uri}", id, client_id)
         return
       end
 
@@ -378,7 +381,7 @@ module FastMcp
       @resource_subscriptions[uri] ||= []
       @resource_subscriptions[uri] << id
 
-      send_result({ subscribed: true }, id, client_id: context[:client_id])
+      send_result({ subscribed: true }, id, client_id)
     end
 
     # Handle resources/unsubscribe request
@@ -386,9 +389,10 @@ module FastMcp
       return unless @client_initialized
 
       uri = params['uri']
+      client_id = context[:client_id]
 
       unless uri
-        send_error(-32_602, 'Invalid params: missing resource URI', id, client_id: context[:client_id])
+        send_error(-32_602, 'Invalid params: missing resource URI', id, client_id)
         return
       end
 
@@ -398,7 +402,7 @@ module FastMcp
         @resource_subscriptions.delete(uri) if @resource_subscriptions[uri].empty?
       end
 
-      send_result({ unsubscribed: true }, id, client_id: context[:client_id])
+      send_result({ unsubscribed: true }, id, client_id)
     end
 
     # Notify clients about resource list changes
@@ -415,7 +419,7 @@ module FastMcp
     end
 
     # Send a JSON-RPC result response
-    def send_result(result, id, client_id:, metadata: {})
+    def send_result(result, id, client_id, metadata: {})
       result[:_meta] = metadata if metadata.is_a?(Hash) && !metadata.empty?
 
       response = {
@@ -425,11 +429,11 @@ module FastMcp
       }
 
       # @logger.info("Sending result: #{response.inspect}")
-      send_response(response, client_id: client_id)
+      send_response(response, client_id)
     end
 
     # Send a JSON-RPC error response
-    def send_error(code, message, id = nil, client_id: nil)
+    def send_error(code, message, id = nil, client_id)
       response = {
         jsonrpc: '2.0',
         error: {
@@ -438,12 +442,12 @@ module FastMcp
         },
         id: id
       }
-      @logger.info("Request: #{id} -Error: #{response[:error]}")
-      send_response(response, client_id: client_id) if client_id
+
+      send_response(response, client_id)
     end
 
     # Send a JSON-RPC response
-    def send_response(response, client_id:)
+    def send_response(response, client_id)
       if @transport
         @logger.debug("Sending response: #{response.inspect}")
         @transport.send_message_to(client_id, response)
