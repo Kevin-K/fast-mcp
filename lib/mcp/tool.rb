@@ -130,6 +130,7 @@ module FastMcp
 
     def initialize
       @_meta = {}
+      @context = nil
     end
 
     attr_accessor :_meta

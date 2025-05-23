@@ -126,6 +126,7 @@ module FastMcp
   # @option options [String] :sse_route The route for the SSE endpoint
   # @option options [Logger] :logger The logger to use
   # @option options [Boolean] :authenticate Whether to use authentication
+  # @option options [Class] :authentication_klass The authentication class to use
   # @option options [String] :auth_token The authentication token
   # @option options [Array<String,Regexp>] :allowed_origins List of allowed origins for DNS rebinding protection
   # @yield [server] A block to configure the server
@@ -140,7 +141,7 @@ module FastMcp
     messages_route = options.delete(:messages_route) || 'messages'
     sse_route = options.delete(:sse_route) || 'sse'
     authenticate = options.delete(:authenticate) || false
-    authenticate_with = options.delete(:authenticate_with) || FastMcp::Transports::AuthenticatedRackTransport
+    authentication_klass = options.delete(:authentication_klass) || FastMcp::Transports::AuthenticatedRackTransport
 
     allowed_origins = options[:allowed_origins] || default_rails_allowed_origins(app)
     allowed_ips = options[:allowed_ips] || FastMcp::Transports::RackTransport::DEFAULT_ALLOWED_IPS
@@ -156,7 +157,7 @@ module FastMcp
 
     # Choose the right middleware based on authentication
     self.server.transport_klass = if authenticate
-                                    authenticate_with
+                                    authentication_klass
                                   else
                                     FastMcp::Transports::RackTransport
                                   end

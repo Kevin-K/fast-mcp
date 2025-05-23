@@ -544,13 +544,11 @@ module FastMcp
 
       # Handle message POST request
       def handle_message_request(request, env)
+        @logger.debug('Received message request')
         return method_not_allowed_response unless request.post?
-        client_id = extract_client_id(env)
 
         begin
-          res = process_json_request(request, client_id)
-          @logger.info("[#{Thread.current.object_id}] [HTTP] [POST] [response]  [#{client_id}] #{res.inspect}")
-          res
+          process_json_request(request, env)
         rescue JSON::ParserError => e
           handle_parse_error(e)
         rescue StandardError => e
@@ -559,14 +557,22 @@ module FastMcp
       end
 
       # Process a JSON-RPC request
-      def process_json_request(request, client_id)
+      def process_json_request(request, env)
         # Parse the request body
         body = request.body.read
-        @context ||= {}
-        @context[:client_id] = client_id
-        response = process_message(body, @context || {}) || []
+
+        # Extract context from env
+        context = extract_context_from_env(env)
+        context[:client_id] = extract_client_id(env)
+        response = process_message(body, context) || []
+        @logger.info("Response: #{response}")
 
         [200, { 'Content-Type' => 'application/json' }, response]
+      end
+
+      # Extract context from rack env. Override in subclass to add custom context.
+      def extract_context_from_env(env)
+        {}
       end
 
       # Return a method not allowed error response

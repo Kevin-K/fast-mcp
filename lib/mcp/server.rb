@@ -141,8 +141,6 @@ module FastMcp
         return send_error(-32_600, 'Invalid Request', nil, client_id)
       end
 
-      @logger.debug("Received request: #{request.inspect}")
-
       if request['jsonrpc'] == '2.0'  && request['id'].present? && request['method'].blank?
         # Handle the response - for ping we can just ignore it
         return nil
@@ -184,7 +182,7 @@ module FastMcp
     end
 
     # Handle a JSON-RPC request and return the response as a JSON string
-    def handle_json_request(request, context)
+    def handle_json_request(request, context = {})
       # Process the request
       if request.is_a?(String)
         handle_request(request, context)
@@ -300,10 +298,10 @@ module FastMcp
     end
 
     # Handle tools/call request
-    def handle_tools_call(params, id, context)
-      client_id = context[:client_id]
+    def handle_tools_call(params, id, context = {})
       tool_name = params['name']
       arguments = params['arguments'] || {}
+      client_id = context[:client_id]
       return send_error(-32_602, 'Invalid params: missing tool name', id, client_id) unless tool_name
 
       tool = @tools[tool_name]
@@ -311,8 +309,11 @@ module FastMcp
 
       begin
         # Convert string keys to symbols for Ruby
-        symbolized_args = symbolize_keys(arguments).merge(context: context)
-        result, metadata = tool.new.call_with_schema_validation!(**symbolized_args)
+        symbolized_args = symbolize_keys(arguments)
+        tool_instance = tool.new
+        tool_instance.context = context
+        result, metadata = tool_instance.call_with_schema_validation!(**symbolized_args)
+
         # Format and send the result
         send_formatted_result(result, id, metadata, client_id)
       rescue FastMcp::Tool::InvalidArgumentsError => e

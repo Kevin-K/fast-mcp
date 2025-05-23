@@ -35,7 +35,7 @@ module FastMcp
       end
       # Process an incoming message
       # This is a helper method that can be used by subclasses
-      def process_message(message, context)
+      def process_message(message, context = {})
         server.handle_json_request(message, context)
       end
     end
