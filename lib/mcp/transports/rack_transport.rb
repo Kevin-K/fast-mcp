@@ -482,16 +482,13 @@ module FastMcp
       def send_keep_alive_ping(io, client_id, ping_count)
         ping_count += 1
         # Send a comment before each ping to keep the connection alive
-        if mutex
-          mutex.synchronize do
-            io.write(": keep-alive #{ping_count}\n\n")
-            io.flush
-          end
-        end
+        io.write(": keep-alive #{ping_count}\n\n")
+        io.flush
+
         # Only send actual ping events every 5 counts to reduce overhead
         if (ping_count % 5).zero?
           @logger.debug("Sending ping ##{ping_count} to SSE client #{client_id}")
-          send_ping_event(io, mutex)
+          send_ping_event(io)
         end
         ping_count
       end
